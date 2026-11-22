@@ -1,9 +1,16 @@
-"""Deterministic synthetic dataset generator for operational claim triage.
+"""Deterministic synthetic dataset generator and CLI for operational claim triage.
 
 Produces `ClaimRecord` instances with realistic right-skewed operational signals,
-non-linear exception interactions, overlapping noise, and optional covariate
-drift (`drift=True`) aligned with `docs/data-governance.md`.
+non-linear exception interactions, overlapping noise, optional covariate
+drift (`drift=True`), and CSV export aligned with `docs/data-governance.md`.
 """
+
+import argparse
+import csv
+import json
+import logging
+from collections.abc import Sequence
+from pathlib import Path
 
 import numpy as np
 
@@ -21,6 +28,9 @@ from claims_triage.schemas import (
 
 # Reproducibility and distribution constants (avoids magic numbers in Ruff PLR2004).
 DEFAULT_SEED: int = 42
+DEFAULT_SAMPLE_COUNT: int = 10_000
+DEFAULT_OUTPUT_PATH: Path = Path("data/claims_train.csv")
+RATE_DECIMAL_PLACES: int = 4
 MIN_CLAIM_AMOUNT: float = 0.01
 DECIMAL_PLACES: int = 2
 
@@ -82,6 +92,8 @@ DOMAIN_TYPES: tuple[DomainType, ...] = (
     "healthcare_claim",
 )
 DOMAIN_TYPE_PROBS: tuple[float, ...] = (0.35, 0.25, 0.40)
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _sigmoid(logits: np.ndarray) -> np.ndarray:
@@ -280,3 +292,105 @@ def generate_claims(
         )
 
     return records
+
+
+def write_claims_csv(records: Sequence[ClaimRecord], output_path: Path) -> Path:
+    """Serialize `ClaimRecord` rows to a UTF-8 CSV file matching schema field order.
+
+    Args:
+        records: Non-empty sequence of validated `ClaimRecord` objects.
+        output_path: Destination filesystem path for the generated CSV file.
+
+    Returns:
+        The written `output_path`.
+
+    Raises:
+        ValueError: If `records` is empty.
+    """
+    if not records:
+        msg = "Cannot write CSV from an empty sequence of ClaimRecord items."
+        raise ValueError(msg)
+
+    # Ensure nested output directories (e.g., data/, reports/) exist before writing.
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = list(ClaimRecord.model_fields.keys())
+
+    # `newline=""` and UTF-8 prevent blank lines and encoding issues across platforms.
+    with output_path.open("w", encoding="utf-8", newline="") as file_handle:
+        writer = csv.DictWriter(file_handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for record in records:
+            writer.writerow(record.model_dump())
+
+    return output_path
+
+
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    """Parse command-line arguments for synthetic claim dataset generation."""
+    parser = argparse.ArgumentParser(
+        prog="claims_triage.generate",
+        description="Generate deterministic synthetic claim triage datasets as CSV.",
+    )
+    parser.add_argument(
+        "--n-samples",
+        type=int,
+        default=DEFAULT_SAMPLE_COUNT,
+        help=f"Number of claim rows to generate (default: {DEFAULT_SAMPLE_COUNT}).",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=DEFAULT_SEED,
+        help=f"Deterministic RNG seed (default: {DEFAULT_SEED}).",
+    )
+    parser.add_argument(
+        "--drift",
+        action="store_true",
+        default=False,
+        help="Enable covariate distribution shift in generated features.",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=DEFAULT_OUTPUT_PATH,
+        help=f"Destination CSV path (default: {DEFAULT_OUTPUT_PATH}).",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: Sequence[str] | None = None) -> Path:
+    """CLI entrypoint that generates synthetic claims and exports them to CSV."""
+    # Emit raw JSON messages so log collectors (e.g., Cloud Logging) parse fields.
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+
+    args = parse_args(argv)
+    n_samples: int = args.n_samples
+    seed: int = args.seed
+    drift: bool = args.drift
+    output_path: Path = args.output
+
+    records = generate_claims(n_samples=n_samples, seed=seed, drift=drift)
+    written_path = write_claims_csv(records=records, output_path=output_path)
+
+    exception_count = sum(record.is_exception for record in records)
+    exception_rate = round(exception_count / len(records), RATE_DECIMAL_PLACES)
+
+    # Emit structured JSON summary without any raw record or PII payloads.
+    LOGGER.info(
+        json.dumps(
+            {
+                "event": "claims_dataset_generated",
+                "n_samples": n_samples,
+                "seed": seed,
+                "drift": drift,
+                "exception_count": exception_count,
+                "exception_rate": exception_rate,
+                "output_path": str(written_path),
+            }
+        )
+    )
+    return written_path
+
+
+if __name__ == "__main__":
+    main()  # pragma: no cover
