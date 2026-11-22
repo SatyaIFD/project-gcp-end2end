@@ -4,7 +4,10 @@ version = "0.1.0"
 description = "Cost-controlled GCP end-to-end MLOps pipeline for imbalanced claims and transaction QA triage."
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
-dependencies = []
+dependencies = [
+    "numpy>=2.5.5",
+    "pydantic>=2.14.4",
+]
 
 [dependency-groups]
 dev = [
