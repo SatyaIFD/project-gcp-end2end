@@ -1,0 +1,62 @@
+name: DevSecOps Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  security-and-quality:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python 3.13
+        run: uv python install 3.13
+
+      - name: Lint and Format Check (Ruff)
+        run: |
+          uv run --isolated ruff format --check .
+          uv run --isolated ruff check .
+
+      - name: Static Type Checking (Mypy)
+        run: uv run --isolated mypy src tests
+
+      - name: Python Security Audit (Bandit & pip-audit)
+        run: |
+          uv run --isolated bandit -c pyproject.toml -r src
+          uv run --isolated pip-audit
+
+      - name: Secret Scanning (detect-secrets)
+        run: |
+          uvx detect-secrets scan --exclude-files 'uv\.lock' > /tmp/ci-secrets.baseline
+          python3 -c '
+          import json
+          with open("/tmp/ci-secrets.baseline", encoding="utf-8") as f:
+              results = json.load(f).get("results", {})
+          assert not results, f"Potential secrets detected: {results}"
+          print("Zero secrets detected.")
+          '
+
+      - name: Run Unit Tests & Coverage Gate (Pytest)
+        run: uv run --isolated pytest
+
+      - name: Filesystem Vulnerability Scan (Trivy)
+        uses: aquasecurity/trivy-action@0.30.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true

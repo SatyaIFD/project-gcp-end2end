@@ -1,0 +1,34 @@
+# Python & uv
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+
+# Secrets & Credentials (Hard Ban)
+.env
+.env.*
+*.pem
+*.key
+*service-account*.json
+*credentials*.json
+adc.json
+
+# Generated Data & Model Artifacts (Stored in GCS, not Git)
+data/
+artifacts/
+*.csv
+*.parquet
+*.joblib
+*.pkl
+*.model
+
+# Terraform Local State
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/*.tfvars
+!terraform/*.tfvars.example
