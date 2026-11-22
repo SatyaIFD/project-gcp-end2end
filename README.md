@@ -21,3 +21,11 @@ End-to-end, cost-controlled Cloud ML and MLOps pipeline for **imbalanced claims/
 - `docs/known-limitations.md` — Explicit engineering tradeoffs and scope boundaries.
 - `docs/decisions/` — Architectural Decision Records (ADRs).
 - `docs/hurdles/` — Real-world Operational Hurdles and Root-Cause Logs.
+
+## Local Quickstart & Phase 1 CLI
+Run the full local DevSecOps quality and security suite:
+- `make all` — Runs `ruff`, `mypy --strict`, `bandit`, `pip-audit`, `detect-secrets`, and `pytest` (`>=80%` coverage gate).
+
+Generate reproducible training and covariate-shifted evaluation datasets locally (output in `data/`, excluded from Git):
+- `uv run --isolated python -m claims_triage.generate --n-samples 10000 --seed 42 --output data/claims_train.csv`
+- `uv run --isolated python -m claims_triage.generate --n-samples 2000 --seed 99 --drift --output data/claims_drift.csv`
