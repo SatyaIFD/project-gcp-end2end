@@ -1,21 +1,32 @@
 from __future__ import annotations
 
+import json
+import logging
+from pathlib import Path
+
 import numpy as np
 import pytest
 from pydantic import ValidationError
 
 from claims_triage.features import records_to_feature_matrix
-from claims_triage.generate import generate_claims
+from claims_triage.generate import generate_claims, write_claims_csv
 from claims_triage.train import (
     DEFAULT_SEED,
+    METRICS_FILENAME,
     MIN_LIFT,
     MIN_METRIC,
+    MODEL_FILENAME,
+    ArtifactIntegrityError,
     QualityGateError,
     TriageThresholds,
     build_baseline_pipeline,
     build_candidate_pipeline,
     calibrate_triage_thresholds,
+    compute_file_sha256,
     evaluate_cv_pr_auc,
+    load_verified_artifact,
+    main,
+    save_model_artifacts,
     train_and_evaluate,
 )
 
@@ -195,3 +206,127 @@ def test_train_and_evaluate_enforce_gate_false_records_failure() -> None:
 
     assert report.passed_quality_gate is False
     assert pipeline is not None
+
+
+def test_save_and_load_verified_artifact_roundtrip(tmp_path: Path) -> None:
+    sample_count = 1500
+    cv_splits = 3
+    records = generate_claims(n_samples=sample_count, seed=DEFAULT_SEED)
+    pipeline, report = train_and_evaluate(
+        records,
+        seed=DEFAULT_SEED,
+        n_splits=cv_splits,
+        min_pr_auc_lift=MIN_LIFT,
+        enforce_gate=True,
+    )
+
+    artifacts_dir = tmp_path / "artifacts"
+    metadata = save_model_artifacts(
+        pipeline,
+        report,
+        artifacts_dir,
+        training_rows=sample_count,
+        seed=DEFAULT_SEED,
+    )
+
+    model_path = artifacts_dir / MODEL_FILENAME
+    assert metadata.model_sha256 == compute_file_sha256(model_path)
+
+    reloaded_pipeline, reloaded_metadata = load_verified_artifact(artifacts_dir)
+    assert reloaded_metadata.model_sha256 == metadata.model_sha256
+
+    x_sample, _ = records_to_feature_matrix(records[:10])
+    orig_probs = pipeline.predict_proba(x_sample)
+    reloaded_probs = reloaded_pipeline.predict_proba(x_sample)
+    assert np.allclose(orig_probs, reloaded_probs)
+
+
+def test_load_verified_artifact_detects_tampering(tmp_path: Path) -> None:
+    sample_count = 1500
+    cv_splits = 3
+    records = generate_claims(n_samples=sample_count, seed=DEFAULT_SEED)
+    pipeline, report = train_and_evaluate(
+        records,
+        seed=DEFAULT_SEED,
+        n_splits=cv_splits,
+        min_pr_auc_lift=MIN_LIFT,
+        enforce_gate=True,
+    )
+
+    artifacts_dir = tmp_path / "artifacts"
+    save_model_artifacts(
+        pipeline,
+        report,
+        artifacts_dir,
+        training_rows=sample_count,
+        seed=DEFAULT_SEED,
+    )
+
+    model_path = artifacts_dir / MODEL_FILENAME
+    with model_path.open("ab") as handle:
+        handle.write(b"x")
+
+    with pytest.raises(ArtifactIntegrityError, match="SHA-256 mismatch"):
+        load_verified_artifact(artifacts_dir)
+
+
+def test_load_verified_artifact_blocks_path_traversal(tmp_path: Path) -> None:
+    sample_count = 1500
+    cv_splits = 3
+    records = generate_claims(n_samples=sample_count, seed=DEFAULT_SEED)
+    pipeline, report = train_and_evaluate(
+        records,
+        seed=DEFAULT_SEED,
+        n_splits=cv_splits,
+        min_pr_auc_lift=MIN_LIFT,
+        enforce_gate=True,
+    )
+
+    artifacts_dir = tmp_path / "artifacts"
+    save_model_artifacts(
+        pipeline,
+        report,
+        artifacts_dir,
+        training_rows=sample_count,
+        seed=DEFAULT_SEED,
+    )
+
+    metrics_path = artifacts_dir / METRICS_FILENAME
+    payload = json.loads(metrics_path.read_text(encoding="utf-8"))
+    payload["model_filename"] = "../outside.joblib"
+    metrics_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ArtifactIntegrityError, match="escapes artifacts directory"):
+        load_verified_artifact(artifacts_dir)
+
+
+def test_cli_main_trains_saves_artifacts_and_logs_json(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    sample_count = 1500
+    records = generate_claims(n_samples=sample_count, seed=DEFAULT_SEED)
+    csv_path = tmp_path / "train.csv"
+    write_claims_csv(records, csv_path)
+    out_dir = tmp_path / "out_artifacts"
+
+    with caplog.at_level(logging.INFO):
+        metadata = main(
+            [
+                "--input",
+                str(csv_path),
+                "--output-dir",
+                str(out_dir),
+                "--n-splits",
+                "3",
+                "--min-pr-auc-lift",
+                "-1.0",
+            ]
+        )
+
+    assert (out_dir / MODEL_FILENAME).exists()
+    assert (out_dir / METRICS_FILENAME).exists()
+
+    log_payload = json.loads(caplog.records[-1].message)
+    assert log_payload["event"] == "model_trained_and_saved"
+    assert log_payload["model_sha256"] == metadata.model_sha256

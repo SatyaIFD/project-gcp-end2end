@@ -1,8 +1,16 @@
 from __future__ import annotations
 
+import argparse
+import hashlib
+import hmac
+import json
+import logging
 from collections.abc import Sequence
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Self
 
+import joblib
 import numpy as np
 from numpy.typing import NDArray
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -22,7 +30,12 @@ from sklearn.model_selection import (
 )
 from sklearn.pipeline import Pipeline
 
-from claims_triage.features import build_preprocessor, records_to_feature_matrix
+from claims_triage import __version__
+from claims_triage.features import (
+    build_preprocessor,
+    load_claims_csv,
+    records_to_feature_matrix,
+)
 from claims_triage.schemas import ClaimRecord
 
 DEFAULT_SEED: int = 42
@@ -51,9 +64,24 @@ DEFAULT_STANDARD_QA_FALLBACK: float = 0.20
 DEFAULT_PRIORITY_FALLBACK: float = 0.70
 PRIORITY_FALLBACK_MARGIN: float = 0.10
 
+DEFAULT_INPUT_PATH: Path = Path("data/claims_train.csv")
+DEFAULT_ARTIFACTS_DIR: Path = Path("artifacts")
+MODEL_FILENAME: str = "model.joblib"
+METRICS_FILENAME: str = "metrics.json"
+HASH_CHUNK_BYTES: int = 65_536
+SHA256_HEX_LENGTH: int = 64
+MIN_TRAINING_ROWS: int = 1
+JSON_INDENT: int = 2
+
+LOGGER = logging.getLogger(__name__)
+
 
 class QualityGateError(RuntimeError):
     """Raised when the candidate model fails to pass promotion quality gates."""
+
+
+class ArtifactIntegrityError(RuntimeError):
+    """Raised when a model artifact fails path or SHA-256 integrity checks."""
 
 
 class TriageThresholds(BaseModel):
@@ -90,6 +118,24 @@ class EvaluationReport(BaseModel):
     test_precision_at_priority: float = Field(ge=MIN_METRIC, le=MAX_METRIC)
     thresholds: TriageThresholds
     passed_quality_gate: bool
+
+
+class ModelMetadata(BaseModel):
+    """Serialized artifact manifest containing digest, training context, and report."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    model_version: str = Field(min_length=1)
+    model_filename: str = Field(min_length=1)
+    model_sha256: str = Field(
+        min_length=SHA256_HEX_LENGTH,
+        max_length=SHA256_HEX_LENGTH,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    training_rows: int = Field(gt=0)
+    seed: int
+    trained_at_utc: str = Field(min_length=1)
+    report: EvaluationReport
 
 
 def build_baseline_pipeline(seed: int = DEFAULT_SEED) -> Pipeline:
@@ -299,3 +345,186 @@ def train_and_evaluate(
         passed_quality_gate=passed_quality_gate,
     )
     return candidate_pipeline, report
+
+
+def compute_file_sha256(file_path: Path) -> str:
+    """Stream a file in binary chunks and return its lowercase SHA-256 hex digest."""
+    if not file_path.exists():
+        msg = f"File not found for SHA-256 computation: {file_path}"
+        raise FileNotFoundError(msg)
+
+    hasher = hashlib.sha256()
+    with file_path.open("rb") as handle:
+        while True:
+            chunk = handle.read(HASH_CHUNK_BYTES)
+            if not chunk:
+                break
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def save_model_artifacts(
+    pipeline: Pipeline,
+    report: EvaluationReport,
+    output_dir: Path,
+    *,
+    training_rows: int,
+    seed: int,
+    model_version: str = __version__,
+) -> ModelMetadata:
+    """Persist fitted pipeline artifact and signed metadata manifest."""
+    if training_rows < MIN_TRAINING_ROWS:
+        msg = f"training_rows must be at least {MIN_TRAINING_ROWS}, got {training_rows}"
+        raise ValueError(msg)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    model_path = output_dir / MODEL_FILENAME
+    joblib.dump(pipeline, model_path)
+
+    model_sha256 = compute_file_sha256(model_path)
+    metadata = ModelMetadata(
+        model_version=model_version,
+        model_filename=MODEL_FILENAME,
+        model_sha256=model_sha256,
+        training_rows=training_rows,
+        seed=seed,
+        trained_at_utc=datetime.now(UTC).isoformat(),
+        report=report,
+    )
+
+    metrics_path = output_dir / METRICS_FILENAME
+    metrics_path.write_text(
+        metadata.model_dump_json(indent=JSON_INDENT),
+        encoding="utf-8",
+    )
+    return metadata
+
+
+def load_verified_artifact(artifacts_dir: Path) -> tuple[Pipeline, ModelMetadata]:
+    """Validate path containment and SHA-256 digest before loading model artifact."""
+    metrics_path = artifacts_dir / METRICS_FILENAME
+    if not metrics_path.exists():
+        msg = f"Model metadata manifest not found: {metrics_path}"
+        raise FileNotFoundError(msg)
+
+    metadata = ModelMetadata.model_validate_json(
+        metrics_path.read_text(encoding="utf-8")
+    )
+
+    base_dir = artifacts_dir.resolve()
+    model_path = (base_dir / metadata.model_filename).resolve()
+    if model_path.parent != base_dir:
+        msg = "Model path escapes artifacts directory."
+        raise ArtifactIntegrityError(msg)
+
+    actual_sha256 = compute_file_sha256(model_path)
+    if not hmac.compare_digest(actual_sha256, metadata.model_sha256):
+        msg = (
+            "Model artifact SHA-256 mismatch: "
+            f"expected={metadata.model_sha256}, actual={actual_sha256}"
+        )
+        raise ArtifactIntegrityError(msg)
+
+    loaded = joblib.load(model_path)
+    if not isinstance(loaded, Pipeline):
+        loaded_type = type(loaded).__name__
+        msg = f"Deserialized artifact is not a sklearn Pipeline: {loaded_type}"
+        raise ArtifactIntegrityError(msg)
+
+    return loaded, metadata
+
+
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    """Parse command-line arguments for model training, gating, and artifact export."""
+    parser = argparse.ArgumentParser(
+        prog="claims_triage.train",
+        description="Train and evaluate the claims triage model with quality gates.",
+    )
+    parser.add_argument(
+        "--input",
+        type=Path,
+        default=DEFAULT_INPUT_PATH,
+        help=f"Input training CSV path (default: {DEFAULT_INPUT_PATH}).",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=DEFAULT_ARTIFACTS_DIR,
+        help=f"Output directory for artifacts (default: {DEFAULT_ARTIFACTS_DIR}).",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=DEFAULT_SEED,
+        help=f"Deterministic random seed (default: {DEFAULT_SEED}).",
+    )
+    parser.add_argument(
+        "--n-splits",
+        type=int,
+        default=DEFAULT_CV_SPLITS,
+        help=f"Number of stratified CV folds (default: {DEFAULT_CV_SPLITS}).",
+    )
+    parser.add_argument(
+        "--min-pr-auc-lift",
+        type=float,
+        default=MIN_PR_AUC_LIFT,
+        help=f"Minimum PR-AUC lift over baseline (default: {MIN_PR_AUC_LIFT}).",
+    )
+    parser.add_argument(
+        "--model-version",
+        type=str,
+        default=__version__,
+        help=f"Model version identifier (default: {__version__}).",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: Sequence[str] | None = None) -> ModelMetadata:
+    """CLI entrypoint that loads data, runs gated training, and saves artifacts."""
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+
+    args = parse_args(argv)
+    input_path: Path = args.input
+    output_dir: Path = args.output_dir
+    seed: int = args.seed
+    n_splits: int = args.n_splits
+    min_pr_auc_lift: float = args.min_pr_auc_lift
+    model_version: str = args.model_version
+
+    records = load_claims_csv(input_path)
+    pipeline, report = train_and_evaluate(
+        records,
+        seed=seed,
+        n_splits=n_splits,
+        min_pr_auc_lift=min_pr_auc_lift,
+        enforce_gate=True,
+    )
+    metadata = save_model_artifacts(
+        pipeline,
+        report,
+        output_dir,
+        training_rows=len(records),
+        seed=seed,
+        model_version=model_version,
+    )
+
+    LOGGER.info(
+        json.dumps(
+            {
+                "event": "model_trained_and_saved",
+                "model_version": metadata.model_version,
+                "training_rows": metadata.training_rows,
+                "baseline_cv_pr_auc": report.baseline_cv_pr_auc,
+                "candidate_cv_pr_auc": report.candidate_cv_pr_auc,
+                "pr_auc_lift": report.pr_auc_lift,
+                "test_pr_auc": report.test_pr_auc,
+                "model_sha256": metadata.model_sha256,
+                "output_dir": str(output_dir),
+            }
+        )
+    )
+    return metadata
+
+
+if __name__ == "__main__":
+    main()  # pragma: no cover

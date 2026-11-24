@@ -29,3 +29,6 @@ Run the full local DevSecOps quality and security suite:
 Generate reproducible training and covariate-shifted evaluation datasets locally (output in `data/`, excluded from Git):
 - `uv run --isolated python -m claims_triage.generate --n-samples 10000 --seed 42 --output data/claims_train.csv`
 - `uv run --isolated python -m claims_triage.generate --n-samples 2000 --seed 99 --drift --output data/claims_drift.csv`
+
+Run gated Phase 2 model training, threshold calibration, and SHA-256 artifact export locally (output in `artifacts/`, excluded from Git):
+- `uv run --isolated python -m claims_triage.train --input data/claims_train.csv --output-dir artifacts --seed 42`
