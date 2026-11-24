@@ -33,6 +33,12 @@ DEFAULT_OUTPUT_PATH: Path = Path("data/claims_train.csv")
 RATE_DECIMAL_PLACES: int = 4
 MIN_CLAIM_AMOUNT: float = 0.01
 DECIMAL_PLACES: int = 2
+ZERO_VALUE: float = 0.0
+NOISE_MEAN: float = 0.0
+BINOMIAL_TRIALS: int = 1
+BINARY_FLIP_VALUE: int = 1
+MIN_PRIOR_QA_FLAGS_HIGH_RISK: int = 1
+HIGH_AMOUNT_Z_THRESHOLD: float = 1.15
 
 # Normal baseline distribution parameters (P(X) when drift=False).
 NORMAL_AMOUNT_LOG_MEAN: float = 8.0
@@ -54,22 +60,23 @@ DRIFT_AGE_SCALE: float = 28.0
 VERIFIED_RATE_DRIFT: float = 0.62
 
 # Risk log-odds model weights, noise, and label-flip rate (~3-4% base exception rate).
-BASE_LOGIT: float = -5.15
+BASE_LOGIT: float = -7.5
 LOGIT_CLIP_BOUND: float = 60.0
-GAUSSIAN_NOISE_STD: float = 0.65
-LABEL_FLIP_RATE: float = 0.01
+GAUSSIAN_NOISE_STD: float = 1.05
+LABEL_FLIP_RATE: float = 0.001
 
-WEIGHT_LOG_AMOUNT: float = 0.22
-WEIGHT_AGE_NORM: float = 0.65
-WEIGHT_LOG_VARIANCE: float = 0.32
-WEIGHT_PRIOR_FLAGS: float = 0.45
-WEIGHT_LOW_DOCS: float = 0.35
+WEIGHT_LOG_AMOUNT: float = 0.30
+WEIGHT_AGE_NORM: float = 0.70
+WEIGHT_LOG_VARIANCE: float = 0.35
+WEIGHT_PRIOR_FLAGS: float = 0.50
+WEIGHT_LOW_DOCS: float = 0.40
 WEIGHT_UNVERIFIED: float = 0.85
-WEIGHT_MANUAL_EMAIL: float = 0.40
+WEIGHT_MANUAL_EMAIL: float = 0.45
 
 # Non-linear interaction weights capturing multi-factor operational risk.
-INTERACTION_VARIANCE_UNVERIFIED: float = 0.55
-INTERACTION_AGE_MANUAL_EMAIL: float = 0.70
+INTERACTION_VARIANCE_UNVERIFIED: float = 5.0
+INTERACTION_AGE_MANUAL_EMAIL: float = 5.0
+INTERACTION_HIGH_AMOUNT_PRIOR_FLAGS: float = 3.6
 
 LOW_DOC_THRESHOLD: int = 2
 HIGH_AGE_HOURS_THRESHOLD: float = 72.0
@@ -125,7 +132,7 @@ def _sample_features(
 
     raw_ages = rng.gamma(shape=age_shape, scale=age_scale, size=n_samples)
     processing_age_hours = np.round(
-        np.clip(raw_ages, 0.0, MAX_PROCESSING_AGE_HOURS),
+        np.clip(raw_ages, ZERO_VALUE, MAX_PROCESSING_AGE_HOURS),
         DECIMAL_PLACES,
     )
 
@@ -139,8 +146,8 @@ def _sample_features(
     reconciliation_variance = np.round(
         np.where(
             has_variance,
-            np.clip(variance_magnitudes, 0.0, MAX_RECONCILIATION_VARIANCE),
-            0.0,
+            np.clip(variance_magnitudes, ZERO_VALUE, MAX_RECONCILIATION_VARIANCE),
+            ZERO_VALUE,
         ),
         DECIMAL_PLACES,
     )
@@ -198,7 +205,7 @@ def _compute_exception_labels(
         == "manual_email"
     )
     is_unverified = ~auth_doc_verified
-    has_variance = reconciliation_variance > 0.0
+    has_variance = reconciliation_variance > ZERO_VALUE
     is_low_docs = document_count < LOW_DOC_THRESHOLD
     is_aged_claim = processing_age_hours >= HIGH_AGE_HOURS_THRESHOLD
 
@@ -208,8 +215,15 @@ def _compute_exception_labels(
     log_variance_scaled = np.where(
         has_variance,
         np.log1p(reconciliation_variance / VARIANCE_NORMALIZATION_SCALE),
-        0.0,
+        ZERO_VALUE,
     )
+
+    # Non-linear interactions: AND intersections that trees isolate cleanly.
+    variance_unverified_interaction = has_variance & is_unverified
+    age_manual_email_interaction = is_aged_claim & is_manual_email
+    high_amount_prior_flags_interaction = (
+        log_amount_centered > HIGH_AMOUNT_Z_THRESHOLD
+    ) & (prior_qa_flags >= MIN_PRIOR_QA_FLAGS_HIGH_RISK)
 
     logits = (
         BASE_LOGIT
@@ -220,21 +234,25 @@ def _compute_exception_labels(
         + WEIGHT_LOW_DOCS * is_low_docs.astype(np.float64)
         + WEIGHT_UNVERIFIED * is_unverified.astype(np.float64)
         + WEIGHT_MANUAL_EMAIL * is_manual_email.astype(np.float64)
-        # Non-linear risk combinations (avoids single-threshold separability).
         + INTERACTION_VARIANCE_UNVERIFIED
-        * (has_variance & is_unverified).astype(np.float64)
-        + INTERACTION_AGE_MANUAL_EMAIL
-        * (is_aged_claim & is_manual_email).astype(np.float64)
+        * variance_unverified_interaction.astype(np.float64)
+        + INTERACTION_AGE_MANUAL_EMAIL * age_manual_email_interaction.astype(np.float64)
+        + INTERACTION_HIGH_AMOUNT_PRIOR_FLAGS
+        * high_amount_prior_flags_interaction.astype(np.float64)
         # Gaussian latent noise introduces realistic class boundary overlap.
-        + rng.normal(loc=0.0, scale=GAUSSIAN_NOISE_STD, size=len(claim_amount))
+        + rng.normal(
+            loc=NOISE_MEAN,
+            scale=GAUSSIAN_NOISE_STD,
+            size=len(claim_amount),
+        )
     )
 
     probabilities = _sigmoid(logits)
-    labels = rng.binomial(n=1, p=probabilities)
+    labels = rng.binomial(n=BINOMIAL_TRIALS, p=probabilities)
 
     # Simulate minor QA labeling noise by flipping a small fraction of outcomes.
     flip_mask = rng.random(len(labels)) < LABEL_FLIP_RATE
-    noisy_labels = np.where(flip_mask, 1 - labels, labels)
+    noisy_labels = np.where(flip_mask, BINARY_FLIP_VALUE - labels, labels)
     return np.asarray(noisy_labels, dtype=np.int64)
 
 
