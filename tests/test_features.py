@@ -10,11 +10,12 @@ from pydantic import ValidationError
 from claims_triage.features import (
     ALL_FEATURES,
     build_preprocessor,
+    inputs_to_feature_matrix,
     load_claims_csv,
     records_to_feature_matrix,
 )
 from claims_triage.generate import generate_claims, write_claims_csv
-from claims_triage.schemas import ClaimRecord
+from claims_triage.schemas import ClaimInput, ClaimRecord
 
 
 def test_load_claims_csv_valid_and_missing(tmp_path: Path) -> None:
@@ -71,6 +72,23 @@ def test_records_to_feature_matrix_shapes_and_empty() -> None:
 
     with pytest.raises(ValueError, match="empty sequence"):
         records_to_feature_matrix([])
+
+
+def test_inputs_to_feature_matrix_matches_records_matrix() -> None:
+    records = generate_claims(n_samples=1, seed=99)
+    claim_record = records[0]
+    input_payload = claim_record.model_dump(exclude={"is_exception"})
+    claim_input = ClaimInput(**input_payload)
+
+    input_matrix = inputs_to_feature_matrix([claim_input])
+    record_matrix, _ = records_to_feature_matrix([claim_record])
+
+    assert input_matrix.shape == record_matrix.shape
+    assert input_matrix.dtype == np.object_
+    assert np.array_equal(input_matrix, record_matrix)
+
+    with pytest.raises(ValueError, match="empty sequence"):
+        inputs_to_feature_matrix([])
 
 
 def test_build_preprocessor_fit_transform_and_unseen_category() -> None:
