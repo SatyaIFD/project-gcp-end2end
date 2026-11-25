@@ -27,7 +27,11 @@ WORKDIR /app
 RUN groupadd --gid 10001 appuser \
     && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin appuser \
     && mkdir -p /app/artifacts \
-    && chown -R appuser:appuser /app/artifacts
+    && chown -R appuser:appuser /app/artifacts \
+    && rm -rf \
+        /usr/local/lib/python3.13/site-packages/pip* \
+        /usr/local/lib/python3.13/ensurepip \
+        /usr/local/bin/pip*
 
 COPY --from=builder --chown=appuser:appuser /app/.venv /app/.venv
 
