@@ -13,7 +13,7 @@ from sklearn.preprocessing import (
     StandardScaler,
 )
 
-from claims_triage.schemas import ClaimRecord
+from claims_triage.schemas import ClaimInput, ClaimRecord
 
 NUMERIC_FEATURES: tuple[str, ...] = (
     "claim_amount",
@@ -59,17 +59,15 @@ def load_claims_csv(csv_path: Path) -> list[ClaimRecord]:
     return records
 
 
-def records_to_feature_matrix(
-    records: Sequence[ClaimRecord],
-) -> tuple[NDArray[np.object_], NDArray[np.int64]]:
-    """Convert validated ClaimRecord objects into (X, y) NumPy arrays."""
+def inputs_to_feature_matrix(
+    records: Sequence[ClaimInput],
+) -> NDArray[np.object_]:
+    """Convert validated `ClaimInput` objects into a 2D feature matrix."""
     if not records:
         msg = "Cannot build feature matrix from an empty sequence of records."
         raise ValueError(msg)
 
     rows: list[list[object]] = []
-    targets: list[int] = []
-
     for record in records:
         row: list[object] = []
         for feature in ALL_FEATURES:
@@ -84,11 +82,20 @@ def records_to_feature_matrix(
                 msg = f"Unhandled feature column: {feature}"
                 raise ValueError(msg)
         rows.append(row)
-        targets.append(int(record.is_exception))
 
-    features = np.asarray(rows, dtype=np.object_)
-    labels = np.asarray(targets, dtype=np.int64)
-    return features, labels
+    return np.asarray(rows, dtype=np.object_)
+
+
+def records_to_feature_matrix(
+    records: Sequence[ClaimRecord],
+) -> tuple[NDArray[np.object_], NDArray[np.int64]]:
+    """Convert validated `ClaimRecord` objects into `(X, y)` NumPy arrays."""
+    features = inputs_to_feature_matrix(records)
+    targets = np.asarray(
+        [int(record.is_exception) for record in records],
+        dtype=np.int64,
+    )
+    return features, targets
 
 
 def build_preprocessor() -> ColumnTransformer:

@@ -8,14 +8,20 @@ from pydantic import ValidationError
 from claims_triage.schemas import (
     MAX_CLAIM_AMOUNT,
     MAX_PROCESSING_AGE_HOURS,
+    ClaimInput,
     ClaimRecord,
+    HealthResponse,
+    PredictionResponse,
 )
 
+EXPECTED_CLAIM_AMOUNT: float = 2500.0
+EXPECTED_EXCEPTION_PROBABILITY: float = 0.42
 
-def _valid_payload() -> dict[str, Any]:
-    """Return a baseline dictionary satisfying all `ClaimRecord` constraints."""
+
+def _valid_input_payload() -> dict[str, Any]:
+    """Return a baseline dictionary satisfying all `ClaimInput` constraints."""
     return {
-        "claim_amount": 2500.0,
+        "claim_amount": EXPECTED_CLAIM_AMOUNT,
         "processing_age_hours": 18.5,
         "reconciliation_variance": 12.0,
         "prior_qa_flags": 1,
@@ -23,6 +29,13 @@ def _valid_payload() -> dict[str, Any]:
         "submission_channel": "portal",
         "auth_doc_verified": True,
         "domain_type": "healthcare_claim",
+    }
+
+
+def _valid_payload() -> dict[str, Any]:
+    """Return a baseline dictionary satisfying all `ClaimRecord` constraints."""
+    return {
+        **_valid_input_payload(),
         "is_exception": 0,
     }
 
@@ -84,3 +97,58 @@ def test_claim_record_rejects_extra_pii_fields() -> None:
 
     with pytest.raises(ValidationError):
         ClaimRecord(**payload_with_pii)
+
+
+def test_claim_input_accepts_valid_features_and_rejects_target_or_pii() -> None:
+    """Verify `ClaimInput` accepts 8 features and rejects target or PII fields."""
+    valid_input = ClaimInput(**_valid_input_payload())
+    assert valid_input.claim_amount == EXPECTED_CLAIM_AMOUNT
+    assert valid_input.domain_type == "healthcare_claim"
+
+    leaked_target = {**_valid_input_payload(), "is_exception": 1}
+    with pytest.raises(ValidationError):
+        ClaimInput(**leaked_target)
+
+    with_ssn = {**_valid_input_payload(), "ssn": "123-45-6789"}
+    with pytest.raises(ValidationError):
+        ClaimInput(**with_ssn)
+
+
+def test_prediction_and_health_response_validation() -> None:
+    """Verify serving response contracts accept valid fields and reject invalid ones."""
+    prediction = PredictionResponse(
+        exception_probability=EXPECTED_EXCEPTION_PROBABILITY,
+        triage_bucket="STANDARD_QA",
+        model_version="v1.0.0",
+        standard_qa_threshold=0.35,
+        priority_escalation_threshold=0.80,
+    )
+    assert prediction.triage_bucket == "STANDARD_QA"
+    assert prediction.exception_probability == EXPECTED_EXCEPTION_PROBABILITY
+
+    health = HealthResponse(
+        status="ok",
+        model_loaded=True,
+        model_version="v1.0.0",
+        model_sha256_prefix="0123456789ab",
+    )
+    assert health.status == "ok"
+    assert health.model_sha256_prefix == "0123456789ab"
+
+    with pytest.raises(ValidationError):
+        PredictionResponse(
+            exception_probability=1.2,
+            triage_bucket="PRIORITY_ESCALATION",
+            model_version="v1.0.0",
+            standard_qa_threshold=0.35,
+            priority_escalation_threshold=0.80,
+        )
+
+    with pytest.raises(ValidationError):
+        PredictionResponse(
+            exception_probability=0.50,
+            triage_bucket="INVALID_BUCKET",  # type: ignore[arg-type]
+            model_version="v1.0.0",
+            standard_qa_threshold=0.35,
+            priority_escalation_threshold=0.80,
+        )

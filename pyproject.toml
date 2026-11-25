@@ -5,14 +5,17 @@ description = "Cost-controlled GCP end-to-end MLOps pipeline for imbalanced clai
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
 dependencies = [
+    "fastapi>=0.165.0",
     "numpy>=2.5.5",
     "pydantic>=2.14.4",
     "scikit-learn>=1.9.1",
+    "uvicorn>=0.54.0",
 ]
 
 [dependency-groups]
 dev = [
     "bandit>=1.8.3",
+    "httpx>=0.28.1",
     "mypy>=1.15.0",
     "pip-audit>=2.9.0",
     "pre-commit>=4.2.0",
