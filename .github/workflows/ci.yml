@@ -60,3 +60,17 @@ jobs:
           severity: HIGH,CRITICAL
           exit-code: "1"
           ignore-unfixed: true
+
+      - name: Build & Verify Non-Root Container Image
+        run: |
+          docker build -t claims-triage:ci .
+          docker run --rm --entrypoint id claims-triage:ci | grep -q "uid=10001"
+
+      - name: Container Image Vulnerability Scan (Trivy)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: image
+          image-ref: claims-triage:ci
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true

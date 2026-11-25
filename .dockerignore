@@ -1,0 +1,24 @@
+# Version control & CI metadata
+.git
+.github
+.gitignore
+.pre-commit-config.yaml
+.secrets.baseline
+
+# Local environments, caches & test/coverage artifacts
+.venv
+__pycache__
+*.py[cod]
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+htmlcov
+
+# Non-runtime directories & local files
+tests
+docs
+data
+artifacts
+.env*
+Makefile
