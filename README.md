@@ -77,8 +77,9 @@ Build and run the hardened non-root Phase 3 Docker container locally with read-o
   - [`003-deterministic-synthetic-generator-and-schema-contract.md`](docs/decisions/003-deterministic-synthetic-generator-and-schema-contract.md)
   - [`004-leakage-free-pipeline-pr-auc-gate-and-artifact-integrity.md`](docs/decisions/004-leakage-free-pipeline-pr-auc-gate-and-artifact-integrity.md)
   - [`005-fastapi-verified-serving-and-nonroot-multistage-docker.md`](docs/decisions/005-fastapi-verified-serving-and-nonroot-multistage-docker.md)
-- **Operational Hurdles & Root-Cause Logs (`docs/hurdles/` — 4 Hurdles):**
+- **Operational Hurdles & Root-Cause Logs (`docs/hurdles/` — 5 Hurdles):**
   - [`001-revoked-trivy-action-tag-and-dependabot-pr-ordering.md`](docs/hurdles/001-revoked-trivy-action-tag-and-dependabot-pr-ordering.md)
   - [`002-column-transformer-object-dtype-and-ruff-skew.md`](docs/hurdles/002-column-transformer-object-dtype-and-ruff-skew.md)
   - [`003-symmetric-label-noise-and-pr-auc-collapse.md`](docs/hurdles/003-symmetric-label-noise-and-pr-auc-collapse.md)
   - [`004-base-image-pip-vendored-sbom-cves-in-trivy-scan.md`](docs/hurdles/004-base-image-pip-vendored-sbom-cves-in-trivy-scan.md)
+  - [`005-overnight-debian-libzstd-cve-in-trivy-container-gate.md`](docs/hurdles/005-overnight-debian-libzstd-cve-in-trivy-container-gate.md)

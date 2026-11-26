@@ -16,4 +16,4 @@ repos:
     hooks:
       - id: detect-secrets
         args: ["--baseline", ".secrets.baseline"]
-        exclude: uv\.lock
+        exclude: uv\.lock|infra/\.terraform/|infra/terraform\.tfstate.*|infra/\.terraform\.lock\.hcl

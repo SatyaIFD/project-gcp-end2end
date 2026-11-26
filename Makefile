@@ -10,7 +10,7 @@ typecheck:
 security:
 	uv run --isolated bandit -c pyproject.toml -r src
 	uv run --isolated pip-audit
-	detect-secrets scan --exclude-files 'uv\.lock' > .secrets.baseline
+	detect-secrets scan --exclude-files 'uv\.lock|infra/\.terraform/|infra/terraform\.tfstate.*|infra/\.terraform\.lock\.hcl' > .secrets.baseline
 
 test:
 	uv run --isolated pytest
